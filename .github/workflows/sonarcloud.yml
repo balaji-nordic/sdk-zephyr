@@ -1,0 +1,82 @@
+# Workflow that runs static code analysis using sonarcloud.io.
+name: Sonarcloud analysis
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  build:
+    name: Sonar cloud analysis
+    runs-on: ubuntu-latest
+    container: nordicplayground/nrfconnect-sdk:main
+    env:
+      SONAR_SCANNER_VERSION: 4.7.0.2747
+      BUILD_WRAPPER_DOWNLOAD_URL: https://sonarcloud.io/static/cpp/build-wrapper-linux-x86.zip
+      BUILD_WRAPPER_OUT_DIR: build_wrapper_output_directory # Directory where build-wrapper output will be placed
+    steps:
+      - name: Checkout the code
+        uses: actions/checkout@v2
+        with:
+          path: zephyrproject
+          fetch-depth: 0
+
+      # Install more dependencies that are not part of the docker image but are needed by the workflow
+      # x86_64-zephyr-elf tool chain is needed to compile for qemu_x86
+      - name: Install more deps
+        run: |
+          apt install -y lcov gcc-multilib curl
+          cd /workdir/zephyr-sdk
+          ./setup.sh -t x86_64-zephyr-elf
+
+      # The docker image comes pre-initialized with west dependencies. We want to do west update ourselves to to be sure that we get the latest changes in all repos.
+      # The docker image is built nightly. So it may contain slightly out of date repos.
+      # Hence we remove the .west folder and do a re-init
+      - name: West init and update
+        run: |
+          rm -rf /workdir/.west/
+          west init -l zephyrproject
+          cd zephyrproject
+          west update --narrow -o=--depth=1
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v1
+        with:
+          java-version: 11
+
+      - name: Download and set up sonar-scanner
+        env:
+          SONAR_SCANNER_DOWNLOAD_URL: https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${{ env.SONAR_SCANNER_VERSION }}-linux.zip
+        run: |
+          mkdir -p $HOME/.sonar
+          curl -sSLo $HOME/.sonar/sonar-scanner.zip ${{ env.SONAR_SCANNER_DOWNLOAD_URL }}
+          unzip -o $HOME/.sonar/sonar-scanner.zip -d $HOME/.sonar/
+          echo "$HOME/.sonar/sonar-scanner-${{ env.SONAR_SCANNER_VERSION }}-linux/bin" >> $GITHUB_PATH
+
+      - name: Download and set up build-wrapper
+        run: |
+          curl -sSLo $HOME/.sonar/build-wrapper-linux-x86.zip ${{ env.BUILD_WRAPPER_DOWNLOAD_URL }}
+          unzip -o $HOME/.sonar/build-wrapper-linux-x86.zip -d $HOME/.sonar/
+          echo "$HOME/.sonar/build-wrapper-linux-x86" >> $GITHUB_PATH
+
+      - name: Invoke build wrapper with twister command
+        shell: bash
+        run: |
+          source zephyrproject/zephyr-env.sh
+          build-wrapper-linux-x86-64 --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} \
+            zephyrproject/scripts/twister --ninja --build-only -v -i \
+            -T zephyrproject/samples/bluetooth/mesh_demo \
+            -T zephyrproject/samples/bluetooth/mesh \
+            -T zephyrproject/samples/bluetooth/mesh_provisioner \
+            -T zephyrproject/tests/bluetooth/mesh_shell
+
+
+      - name: Run sonar-scanner
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          sonar-scanner --define project.settings=zephyrproject/sonar-project.properties \
+                        --define sonar.cfamily.build-wrapper-output="${{ env.BUILD_WRAPPER_OUT_DIR }}"
