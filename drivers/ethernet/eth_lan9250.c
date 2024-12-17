@@ -491,8 +491,8 @@ static int lan9250_rx(const struct device *dev)
 
 	pkt_buf = pkt->buffer;
 
+	uint8_t *data_ptr = pkt_buf->data;
 	do {
-		uint8_t *data_ptr = pkt_buf->data;
 		uint16_t data_len;
 
 		if (pkt_len > buf_rx_size) {
@@ -504,7 +504,7 @@ static int lan9250_rx(const struct device *dev)
 
 		lan9250_read_buf(dev, data_ptr, data_len);
 		net_buf_add(pkt_buf, data_len);
-
+		pkt_buf = pkt_buf->frags;
 	} while (pkt_len > 0);
 
 	lan9250_read_sys_reg(dev, LAN9250_RX_DATA_FIFO, &tmp);
